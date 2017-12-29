@@ -1,70 +1,58 @@
 #include "blimit.hpp"
+#include "log.h"
 #include <iostream>
 #include <string>
-#include <unordered_map>
-#include <list>
 #include <fstream>
-#include <unordered_set>
 #include <set>
-#include <cassert>
 #include <regex>
 #include <map>
 #include <atomic>
 #include <mutex>
+#include <memory>
+#include <deque>
+#include <thread>
+
+
 
 const std::string REGEX = "([0-9]+) ([0-9]+) ([0-9]+)";
 
+std::vector<int> convert;
+std::map<int,int> new_numbers;
 
-struct pairhash {
-public:
-  template <typename T, typename U>
-  std::size_t operator()(const std::pair<T, U> &x) const
-  {
-    return std::hash<T>()(x.first) ^ std::hash<U>()(x.second);
-  }
-};
+std::vector<int> b;
+// std::deque<std::atomic<int>> b;
+std::deque<std::atomic<int>> db;
 
+std::vector<int> V;
+std::vector<int> R;
 
-struct paircmp {
-    bool operator() (std::pair<int,int> const & lhs, std::pair<int,int> const & rhs) const
-    {
-    return (lhs.second > rhs.second) || (lhs.second == rhs.second && lhs.first > rhs.first);
-    }
-};
-
-
-struct cmp {
-    bool operator() (int const & lhs, int const & rhs) const
-    {
-    return lhs > rhs;
-    }
-};
-
-
-// Mapa wezeł -> sasiedzi wezla
-std::map<int,std::set<std::pair<int,int>,paircmp>> N;
-
-// Mapa krawedz (v,w) -> waga
+// Mapa krawedz -> waga
 std::map<std::pair<int,int>,int> W; 
 
 // Set wszystkich wierzchołkow
 std::set<int> NODES;
 
- // Mapa wierzcholek -> set par (wierzchołek, waga) które go adoruja
-std::unordered_map<int,std::set<std::pair<int,int>,paircmp>> S;
 
-std::map<int,int> b;
-std::map<int,int> db;
+int numer = 0;
 
+struct paircmp {
+    bool operator() (std::pair<int,int> const & lhs, std::pair<int,int> const & rhs) const
+    {
+    return (lhs.second > rhs.second) || (lhs.second == rhs.second && convert[lhs.first] > convert[rhs.first]);
+    }
+};
 
-std::vector<int> V;
-std::vector<int> R;
+std::vector<std::set<std::pair<int,int>,paircmp>> N;
+std::vector<std::set<std::pair<int,int>,paircmp>> S;
+
 
 static std::regex graf(REGEX);
 
 std::atomic_flag argmax_lock = ATOMIC_FLAG_INIT;
 
-std::map<int,std::mutex> mutexes;
+std::vector<std::unique_ptr<std::mutex>> SMutexes;
+
+std::mutex RMutex;
 
 void wypisz_adorowanych() {
 
@@ -80,15 +68,28 @@ void wypisz_adorowanych() {
 }
 
 
-void T_597(int n) {
-    std::cout << "Węzeł " << n << " jest adorowany przez:\n";
-    for (auto i = S[n].begin(); i != S[n].end(); ++i) {
-        std::cout << "wezel " << i->first << ", waga krawedzi " << i->second << '\n';
-    } 
+void update_bvalue(int b_method) {
+
+    // b.clear();
+    for (auto i : NODES) {
+        // b.emplace_back(bvalue(b_method, i));
+        b[new_numbers[i]] = bvalue(b_method, i);
+    }
+}
+
+void zero_db() {
+    db.clear();
+    for (auto v : NODES) {
+        db.emplace_back(0);
+    }
 }
 
 
-
+void clear_S() {
+    for (auto it = S.begin(); it != S.end(); ++it) {
+        it->clear();
+    }
+}
 
 // Argmax (zwraca -1 zamiast nulla)
 int argmax(int u, int b_method) {
@@ -100,22 +101,31 @@ int argmax(int u, int b_method) {
         
         int v = it->first;
         auto p = std::make_pair(u, W[{u,v}]);
+        
 
         if (S[v].find({u,W[{v,u}]}) != S[v].end()) continue;
-        if (S[v].size() < bvalue((uint)b_method, (ulong)v)) {
+        if (S[v].size() < bvalue((uint)b_method, (ulong)convert[v])) {
             return v;
         }
-        else if (bvalue(b_method, (ulong)v) > 0) {
+        else if (bvalue(b_method, (ulong)convert[v]) > 0) {
             std::pair<int,int> p2 = *(--S[v].end());
+            // p2.first = convertp2.first;
             if (compare(p, p2)) return v;
         }
     }
     return -1;
 }
 
-
-
-void get_adorators(int u, int b_method) {
+bool is_eligible(int x, int u, int b_method) {
+    struct paircmp compare;
+    if (S[x].find({u, W[{u,x}]}) != S[x].end()) return false;
+    if (S[x].size() < bvalue((uint)b_method, (ulong)convert[x]) 
+        || (bvalue(b_method, (ulong)convert[x]) > 0) && compare({u,W[{u,x}]}, *(--S[x].end()))) {
+            return true;
+        }
+        else return false;
+}
+void get_adorators(int u, int b_method, int id) {
 
     int i = 0;
     int y;
@@ -125,34 +135,58 @@ void get_adorators(int u, int b_method) {
 
         if (x == -1) return;
         else {
-            if (S[x].size() < bvalue((uint)b_method, (ulong)x)) y = -1;
-            else {
-                auto p = *(--S[x].end());
-                y = p.first;
+            SMutexes[x]->lock();
+
+            if (is_eligible(x, u, b_method)) {
+
+                if (S[x].size() < bvalue((uint)b_method, (ulong)convert[x])) y = -1;
+                else {
+                    auto p = *(--S[x].end());
+                    y = p.first;
+                }
+                // log("get_adorators: watek ", id, ", wybral wezel ", convert[x]);
+                S[x].insert({u,W[{x,u}]});
+                if (y != -1) {
+                    RMutex.lock();
+                    S[x].erase(--S[x].end());
+                    // log("get_adorators: watek ", id,  ", zwieksza wezel  ", convert[y]);
+                    if (db[y] == 0) {
+                        R.push_back(y);
+                    }
+                    db[y]++;
+                    RMutex.unlock();
+                }
+                i++;
             }
-            S[x].insert({u,W[{x,u}]});
-            if (y != -1) {
-                S[x].erase(--S[x].end());
-                if (db[y] == 0) R.push_back(y);
-                db[y]++;
-            }
-            i++;
+            SMutexes[x]->unlock();
         }
 
     }
 }
 
+void add_new_node(int v) {
+    new_numbers[v] = numer;
+    b.push_back(0);
+    db.emplace_back(0);   
+    N.push_back(std::set<std::pair<int,int>,paircmp>());
+    S.push_back(std::set<std::pair<int,int>,paircmp>());
+    convert.push_back(v);
+    NODES.insert(v);
+    SMutexes.push_back(std::make_unique<std::mutex>());
+    numer++;
+}
 
-void update_bvalue(int b_method) {
 
-    for (auto i : NODES) {
-        b[i] = bvalue(b_method, i);
+void copy_db_to_b() {
+    for (int i = 0; i < db.size(); ++i) {
+        b[i] = db[i];
     }
 }
 
-void zero_db() {
-    for (auto v : NODES) {
-        db[v] = 0;
+void find_adorators(std::vector<int> C, int b_method, int id) {
+
+    for (auto it = C.begin(); it != C.end(); ++it) {
+        get_adorators(*it, b_method, id);
     }
 }
 
@@ -174,54 +208,64 @@ int main(int argc, char* argv[]) {
     int x, y, w;
     std::smatch matches;
 
-    int numer = 0;
-    
     if (file.is_open()) {
         while (getline(file, line)) {
             if (line[0] != '#' && !line.empty() && std::regex_match(line, matches, graf)) {
-                
+    
                 x = std::stoi(matches[1].str());
                 y = std::stoi(matches[2].str());
                 w = std::stoi(matches[3].str());
-                W.insert(std::make_pair(std::make_pair(x,y),w));
-                W.insert(std::make_pair(std::make_pair(y,x),w));
-                N[x].insert(std::make_pair(y,w));
-                N[y].insert(std::make_pair(x,w));
-                if (NODES.find(x) == NODES.end()) {
-                    NODES.insert(x);
-                    db[x] = 0;
-                    // mutexes.insert(std::make_pair(x,std::mutex()));
-                }
-                if (NODES.find(y) == NODES.end()) {
-                    NODES.insert(y);
-                    db[y] = 0;
-                }
+                
+                if (NODES.find(x) == NODES.end()) add_new_node(x);
+                if (NODES.find(y) == NODES.end()) add_new_node(y);
+
+                int nx = new_numbers[x];
+                int ny = new_numbers[y];
+                W.insert(std::make_pair(std::make_pair(nx,ny),w));
+                W.insert(std::make_pair(std::make_pair(ny,nx),w));
+                N[nx].insert(std::make_pair(ny,w));
+                N[ny].insert(std::make_pair(nx,w));
+
             }
         }
-
     } else {
         std::cerr << "Error: couldn't open file: " << input_filename << '\n';
     } 
 
-    
 
-    for (auto i : NODES) {
-        V.push_back(i);
+    int l = 0;
+    for (auto i : convert) {
+        V.push_back(l);
+        l++;
     }
 
+
     std::vector<int> Q;
-    for (int b_method = 0; b_method < b_limit + 1; b_method++) {
+    for (int b_method = 0; b_method < b_limit + 1  ; b_method++) {
         Q = V;
         update_bvalue(b_method);
         while (!Q.empty()) {
 
-            for (auto it = Q.begin(); it != Q.end(); ++it) {
-                // std::cout << "Rozpatruje wezel " << *it << '\n';
-                get_adorators(*it, b_method);
+            std::thread threads[thread_count];
+
+            std::vector<int> C[thread_count];
+
+            for (auto i = 0; i < Q.size(); ++i) {
+                C[i % thread_count].push_back(Q[i]);
             }
+
+            // Odpalanie puli watkow;
+            for (auto i = 0; i < thread_count; ++i) {
+                threads[i] = std::thread(find_adorators, C[i], b_method, i);
+            }
+
+            for (auto i = 0; i < thread_count; ++i) {
+                threads[i].join();
+            }
+
             Q = R;
             R.clear();
-            b = db;
+            copy_db_to_b();
             zero_db();
         }
 
@@ -229,15 +273,15 @@ int main(int argc, char* argv[]) {
         // wypisz_adorowanych();
         long long sum = 0;
         
-        for (auto it = S.begin(); it != S.end(); ++it) {
-            std::set<std::pair<int,int>, paircmp> se = it->second;
+        for (auto it = 0; it < S.size(); ++it) {
+            std::set<std::pair<int,int>, paircmp> se = S[it];
             for (auto its = se.begin(); its != se.end(); ++its) {
-                // std::cout << "Wezeł " << it->first << " jest adorowany przez " << its->first << '\n';
+                // std::cout << "Wezeł " << convert[it] << " jest adorowany przez " << convert[its->first] << '\n';
                 sum += its->second;
             }
         }
         std::cout << sum/2 << std::endl;
-        S.clear();
+        clear_S();
     }
     
 
