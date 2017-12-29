@@ -6,7 +6,6 @@
 #include <fstream>
 #include <unordered_set>
 #include <set>
-#include <queue>
 #include <cassert>
 #include <regex>
 #include <map>
@@ -43,7 +42,7 @@ struct cmp {
 
 
 // Mapa wezeł -> sasiedzi wezla
-std::map<int,std::vector<int>> N;
+std::map<int,std::set<std::pair<int,int>,paircmp>> N;
 
 // Mapa krawedz (v,w) -> waga
 std::map<std::pair<int,int>,int> W; 
@@ -54,14 +53,14 @@ std::set<int> NODES;
  // Mapa wierzcholek -> set par (wierzchołek, waga) które go adoruja
 std::unordered_map<int,std::set<std::pair<int,int>,paircmp>> S;
 
-// Mapa wierzcholek -> set par (wierzcholek, waga) które sam adoruje 
-std::unordered_map<int,std::set<int,cmp>> T; // 
+std::map<int,int> b;
+std::map<int,int> db;
 
-// Mapa wierzcholek -> set par (wierzcholek, waga) ktorych jeszcze nie adoruje
-// a sa moimi sasiadami
-std::map<int,std::set<std::pair<int,int>,paircmp>> NT;
+
+std::vector<int> V;
+std::vector<int> R;
+
 static std::regex graf(REGEX);
-
 
 std::atomic_flag argmax_lock = ATOMIC_FLAG_INIT;
 
@@ -86,12 +85,6 @@ void T_597(int n) {
     for (auto i = S[n].begin(); i != S[n].end(); ++i) {
         std::cout << "wezel " << i->first << ", waga krawedzi " << i->second << '\n';
     } 
-
-    std::cout << "Węzeł " << n << " adoruje:\n";
-    for (auto i = T[n].begin(); i != T[n].end(); ++i) {
-        std::cout << "wezel " << *i << '\n';// << ", waga krawedzi " << i->second << '\n';
-    } 
-
 }
 
 
@@ -100,37 +93,68 @@ void T_597(int n) {
 // Argmax (zwraca -1 zamiast nulla)
 int argmax(int u, int b_method) {
 
-    // Jezeli nie mam juz nieadorowanych sasiadow zwracam -1
-    if (NT[u].empty()) return -1;
-    
     struct paircmp compare;
 
     // Przechodze po wszystkich wezlach az znajde taki ktory mi pasuje
-    for (auto it = NT[u].begin(); it != NT[u].end(); ++it) {
-        auto p = *it;
-        int v = p.first;
+    for (auto it = N[u].begin(); it != N[u].end(); ++it) {
+        
+        int v = it->first;
+        auto p = std::make_pair(u, W[{u,v}]);
 
-        // Jezeli wezel nie przekroczyl limitu to go wybieram
-        if (S[v].empty() || S[v].size() < bvalue((uint)b_method, (ulong)v)) {
-            NT[u].erase(it);
+        if (S[v].find({u,W[{v,u}]}) != S[v].end()) continue;
+        if (S[v].size() < bvalue((uint)b_method, (ulong)v)) {
             return v;
         }
-        std::pair<int,int> p2 = *(--S[v].end());
-
-
-        // Jezeli osiagnal limit sprawdzam czy jestem lepszy
-        // albo wybieram albo zwracam -1
-        if (S[v].size() == bvalue(b_method,v) && !compare(p, p2)) {
-            continue;
-        } else {
-            NT[u].erase(it); // usuwam wezel z moich przyszlych kandydatow
-            return v;
+        else if (bvalue(b_method, (ulong)v) > 0) {
+            std::pair<int,int> p2 = *(--S[v].end());
+            if (compare(p, p2)) return v;
         }
     }
     return -1;
 }
 
 
+
+void get_adorators(int u, int b_method) {
+
+    int i = 0;
+    int y;
+    while (i < b[u]) {
+        // wybieram argmax
+        int x = argmax(u, b_method);
+
+        if (x == -1) return;
+        else {
+            if (S[x].size() < bvalue((uint)b_method, (ulong)x)) y = -1;
+            else {
+                auto p = *(--S[x].end());
+                y = p.first;
+            }
+            S[x].insert({u,W[{x,u}]});
+            if (y != -1) {
+                S[x].erase(--S[x].end());
+                if (db[y] == 0) R.push_back(y);
+                db[y]++;
+            }
+            i++;
+        }
+
+    }
+}
+
+
+void update_bvalue(int b_method) {
+
+    for (auto i : NODES) {
+        b[i] = bvalue(b_method, i);
+    }
+}
+
+void zero_db() {
+    for (auto v : NODES) {
+        db[v] = 0;
+    }
+}
 
 int main(int argc, char* argv[]) {
     std::ios_base::sync_with_stdio(false);
@@ -150,6 +174,8 @@ int main(int argc, char* argv[]) {
     int x, y, w;
     std::smatch matches;
 
+    int numer = 0;
+    
     if (file.is_open()) {
         while (getline(file, line)) {
             if (line[0] != '#' && !line.empty() && std::regex_match(line, matches, graf)) {
@@ -157,15 +183,19 @@ int main(int argc, char* argv[]) {
                 x = std::stoi(matches[1].str());
                 y = std::stoi(matches[2].str());
                 w = std::stoi(matches[3].str());
-                W.insert(std::make_pair(std::make_pair(x,y),w)); // dodaje krawedzi
+                W.insert(std::make_pair(std::make_pair(x,y),w));
                 W.insert(std::make_pair(std::make_pair(y,x),w));
+                N[x].insert(std::make_pair(y,w));
+                N[y].insert(std::make_pair(x,w));
                 if (NODES.find(x) == NODES.end()) {
-                    NODES.insert(x); // dodaje wierzcholki do seta
+                    NODES.insert(x);
+                    db[x] = 0;
                     // mutexes.insert(std::make_pair(x,std::mutex()));
                 }
-                if (NODES.find(y) == NODES.end()) NODES.insert(y);
-                NT[x].insert({y,w}); // dodaje pary wierzcholek waga
-                NT[y].insert({x,w});
+                if (NODES.find(y) == NODES.end()) {
+                    NODES.insert(y);
+                    db[y] = 0;
+                }
             }
         }
 
@@ -174,81 +204,40 @@ int main(int argc, char* argv[]) {
     } 
 
     
-    std::vector<int> V;
-    std::vector<int> R;
 
     for (auto i : NODES) {
         V.push_back(i);
     }
 
+    std::vector<int> Q;
     for (int b_method = 0; b_method < b_limit + 1; b_method++) {
-        std::vector<int> Q = V;
+        Q = V;
+        update_bvalue(b_method);
         while (!Q.empty()) {
 
             for (auto it = Q.begin(); it != Q.end(); ++it) {
-
-                int u = *it;
-                // std::cerr << "Rozpatruje node " << u << '\n';
-                while (T[u].size() < bvalue((uint)b_method, (ulong)u)) {
-                    // wybieram argmax
-                    x = argmax(u, b_method);
-
-                    if (x == -1) break;
-                    else {
-
-                        std::pair<int,int> p;
-                        // jezeli nie wypelniony y = -1
-                        if (S[x].size() < bvalue((uint)b_method, (ulong)x)) y = -1;
-                        else {
-                            // inaczej pobieram najgorszy wezel
-                            // i go usuwam
-                            p = *(--S[x].end());
-                            y = p.first;
-                            S[x].erase(--S[x].end());
-                        }
-
-                        // dodaje znalezionemu wezlowi
-                        // ze jest przeze mnie adorowany, wraz z waga krawedzi
-                        // nasepnie sam zapamietuje ze go adoruje
-                        S[x].insert({u,W[{x,u}]});
-                        T[u].insert(x);
-                        // S[u].insert({x,W[{u,x}]});
-                        // T[x].insert(u);
-                        // jezeli pozbylem sie jakiegos wezla
-                        if (y != -1) {
-
-                            // mowie ze nie adoruje juz znalezionego wezla
-                            T[y].erase(x);
-                            // dodaje mu wezel x spowrotem do mozliwych adorowanych
-                            // NT[y].insert({x,W[std::make_pair(y,x)]});
-                            R.push_back(y);
-                        }
-                    }
-
-                }
+                // std::cout << "Rozpatruje wezel " << *it << '\n';
+                get_adorators(*it, b_method);
             }
             Q = R;
             R.clear();
+            b = db;
+            zero_db();
         }
+
+
         // wypisz_adorowanych();
         long long sum = 0;
-        
-        // for (auto it = NODES.begin(); it != NODES.end(); ++it) {
-        //     auto wezel = *it;
-        //     for (auto its = T[wezel].begin(); its != T[wezel].end(); ++its) {
-        //         sum += W[std::make_pair(wezel,*its)];
-        //     }
-        // }
-        // std::cout << sum/2 << '\n';
         
         for (auto it = S.begin(); it != S.end(); ++it) {
             std::set<std::pair<int,int>, paircmp> se = it->second;
             for (auto its = se.begin(); its != se.end(); ++its) {
-                std::cout << "Wezeł " << it->first << " jest połączony z " << its->first << '\n';
+                // std::cout << "Wezeł " << it->first << " jest adorowany przez " << its->first << '\n';
                 sum += its->second;
             }
         }
-        std::cout << sum/2 << '\n';
+        std::cout << sum/2 << std::endl;
+        S.clear();
     }
     
 
