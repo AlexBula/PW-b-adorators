@@ -33,14 +33,21 @@
 
 // }
 
-// road
+// klika
 unsigned int bvalue(unsigned int method, unsigned long node_id) {
-    switch (method) {
-    default: return (2 * node_id + method) % 10;
-    case 0: return 4;
-    case 1: return 7;
-    } 
+    if(method<15)
+        return method*10+1;
+    return (2 * node_id + method) % 100;
 }
+
+// road
+// unsigned int bvalue(unsigned int method, unsigned long node_id) {
+//     switch (method) {
+//     default: return (2 * node_id + method) % 10;
+//     case 0: return 4;
+//     case 1: return 7;
+//     } 
+// }
 
 // youtube
 // unsigned int bvalue(unsigned int method, unsigned long node_id) {
