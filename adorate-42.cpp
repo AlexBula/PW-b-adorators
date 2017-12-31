@@ -68,14 +68,18 @@ void copy_db_to_b() {
 int argmax(int u, int b_method) {
 
     for (auto it = N[u].begin(); it != N[u].end(); ++it) {
-        
-        if (S[it->first].find({u,W[{it->first,u}]}) != S[it->first].end()) continue;
+        SMutexes[it->first]->lock();
+        if (S[it->first].find({u,W[{it->first,u}]}) != S[it->first].end()) {
+            SMutexes[it->first]->unlock();
+            continue;
+        }
         if (S[it->first].size() < bvalue((uint)b_method, (ulong)convert[it->first])) {
             return it->first;
         }
         else if (bvalue(b_method, (ulong)convert[it->first]) > 0) {
             if (compare({u, W[{u,it->first}]}, *(--S[it->first].end()))) return it->first;
         }
+        SMutexes[it->first]->unlock();
     }
     return -1;
 }
@@ -97,7 +101,7 @@ void get_adorators(int u, int b_method, int id) {
         int x = argmax(u, b_method);
         if (x == -1) return;
         else {
-            SMutexes[x]->lock();
+            // SMutexes[x]->lock();
 
             if (is_eligible(x, u, b_method)) {
                 int y;
