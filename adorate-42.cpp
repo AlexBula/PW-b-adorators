@@ -12,7 +12,6 @@
 #include <deque>
 #include <thread>
 #include <chrono>
-#include <sstream>
 
 
 const std::string REGEX = "([0-9]+) ([0-9]+) ([0-9]+)";
@@ -48,7 +47,7 @@ std::vector<std::set<std::pair<int,int>,paircmp>> S;
 std::vector<std::unique_ptr<std::mutex>> SMutexes;
 std::mutex QMutex;
 
-
+// Update bvalues - executed once for each b_method
 void update_bvalues(int b_method) {
     for (auto i : NODES) {
         b[new_ids[i]] = bvalue(b_method, i);
@@ -65,18 +64,18 @@ void copy_db_to_b() {
     }
 }
 
+// Selecting best node from neightbours 
 int argmax(int u, int b_method) {
 
     for (auto it = N[u].begin(); it != N[u].end(); ++it) {
+
         SMutexes[it->first]->lock();
         if (S[it->first].find({u,W[{it->first,u}]}) != S[it->first].end()) {
             SMutexes[it->first]->unlock();
             continue;
-        }
-        if (S[it->first].size() < bvalue((uint)b_method, (ulong)convert[it->first])) {
+        } else if (S[it->first].size() < bvalue((uint)b_method, (ulong)convert[it->first])) {
             return it->first;
-        }
-        else if (bvalue(b_method, (ulong)convert[it->first]) > 0) {
+        } else if (bvalue(b_method, (ulong)convert[it->first]) > 0) {
             if (compare({u, W[{u,it->first}]}, *(--S[it->first].end()))) return it->first;
         }
         SMutexes[it->first]->unlock();
@@ -84,6 +83,7 @@ int argmax(int u, int b_method) {
     return -1;
 }
 
+// Checking if found node is eligible to be an adorator
 bool is_eligible(int x, int u, int b_method) {
 
     if (S[x].find({u, W[{u,x}]}) != S[x].end()) return false;
@@ -93,6 +93,8 @@ bool is_eligible(int x, int u, int b_method) {
         }
         else return false;
 }
+
+// Finding adorators for selected node
 void get_adorators(int u, int b_method, int id) {
 
     int i = 0;
@@ -101,8 +103,6 @@ void get_adorators(int u, int b_method, int id) {
         int x = argmax(u, b_method);
         if (x == -1) return;
         else {
-            // SMutexes[x]->lock();
-
             if (is_eligible(x, u, b_method)) {
                 int y;
                 if (S[x].size() < bvalue((uint)b_method, (ulong)convert[x])) y = -1;
@@ -125,6 +125,7 @@ void get_adorators(int u, int b_method, int id) {
     }
 }
 
+// Renaming nodes for optymalization
 void add_new_node(int v) {
     new_ids[v] = number;
     b.push_back(0);
@@ -140,12 +141,9 @@ void add_new_node(int v) {
 
 
 void find_adorators(std::vector<int> &C, int b_method, int id) {
-    for (auto it = C.begin(); it != C.end(); ++it) {
-        get_adorators(*it, b_method, id);
-    }
+    for (auto it = C.begin(); it != C.end(); ++it) get_adorators(*it, b_method, id);
     QMutex.lock();
     for (auto it = R.begin(); it != R.end(); ++it) RS.insert(*it);
-    // RS.insert(RS.begin(), R.begin(), R.end());
     QMutex.unlock();
 }
 
@@ -167,16 +165,13 @@ int main(int argc, char* argv[]) {
     int x, y, w;
     std::smatch matches;
 
+    // Reading graph from file
     if (file.is_open()) {
         while (getline(file, line)) {
-            if (line[0] != '#' && !line.empty()) {// && std::regex_match(line, matches, graf)) {
-                std::stringstream ss;
-                // x = std::stoi(matches[1].str());
-                // y = std::stoi(matches[2].str());
-                // w = std::stoi(matches[3].str());
-                ss << line;
-                ss >> x >> y >> w;
-                // printf("Numer to %d i %d i %d\n",x,y,w );
+            if (line[0] != '#' && !line.empty() && std::regex_match(line, matches, graf)) {
+                x = std::stoi(matches[1].str());
+                y = std::stoi(matches[2].str());
+                w = std::stoi(matches[3].str());
                 if (NODES.find(x) == NODES.end()) add_new_node(x);
                 if (NODES.find(y) == NODES.end()) add_new_node(y);
 
@@ -186,15 +181,16 @@ int main(int argc, char* argv[]) {
                 W.insert(std::make_pair(std::make_pair(ny,nx),w));
                 N[nx].push_back({ny,w});
                 N[ny].push_back({nx,w});
-
             }
         }
     } else {
         fprintf(stderr,"Error: couldn't open file:%s\n",input_filename);
     } 
+    
     S = std::vector<std::set<std::pair<int,int>,paircmp>>(number);
     std::fill(S.begin(), S.end(), std::set<std::pair<int,int>,paircmp>());
 
+    // Sorting neighbours based on their weights
     for (int it = 0; it < N.size(); ++it) {
         std::sort(N[it].begin(), N[it].end(), compare);
     }
@@ -202,7 +198,7 @@ int main(int argc, char* argv[]) {
     std::chrono::duration<double> elapsed(std::chrono::high_resolution_clock::now() - start);
     fprintf(stderr, "Graf wczytany po %f sekundach\n", elapsed.count());
 
-    
+    // Begining suiting for each b_method
     for (int b_method = 0; b_method < b_limit + 1  ; ++b_method) {
         start = std::chrono::high_resolution_clock::now();
         Q = V;
@@ -210,7 +206,7 @@ int main(int argc, char* argv[]) {
         while (!Q.empty()) {
 
             std::thread threads[thread_count];
-            std::vector<int> C[thread_count];
+            std::vector<int> C[thread_count]; // vector of nodes for each thread
 
             for (auto i = 0; i < Q.size(); ++i) {
                 C[i % thread_count].push_back(Q[i]);
@@ -225,6 +221,7 @@ int main(int argc, char* argv[]) {
                 threads[i].join();
             }
 
+            // Merging results
             for (auto it = RS.begin(); it != RS.end(); ++it) Q.push_back(*it);
             RS.clear();
             copy_db_to_b();
@@ -233,6 +230,7 @@ int main(int argc, char* argv[]) {
 
         int sum = 0;
         
+        // Counting total weight of suiting for selected b_method 
         for (int it = 0; it < S.size(); ++it) {
             for (auto its = S[it].begin(); its != S[it].end(); ++its) {
                 sum += its->second;
